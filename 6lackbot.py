@@ -1,11 +1,22 @@
 import json
+import math
 import slack
 import os
+import requests
+import time
+import webbrowser
 from pathlib import Path
 from dotenv import load_dotenv
 import ssl
 from flask import Flask, request, Response
 from slackeventsapi import SlackEventAdapter
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from chromedriver_py import binary_path
+
+
+
 
 env_path = Path('.') / '.env'
 load_dotenv(dotenv_path=env_path)
@@ -20,6 +31,8 @@ ssl_context.verify_mode = ssl.CERT_NONE
 
 client = slack.WebClient(token=os.environ['SLACK_TOKEN'], ssl=ssl_context)
 BOT_ID = client.api_call("auth.test")['user_id']
+
+places_key = os.environ['GOOGLE_PLACES_API_KEY']
 
 
 @slack_event_adapter.on('message')
@@ -40,13 +53,125 @@ def message(payload):
 
 class configure_class:
 
-    def __init__(self, food_type='', eat_out_type= '', user_budget=0, user_time=0):
+    def __init__(self, food_type='', eat_out_type= '', user_budget=0, user_time=0, location=('49.25939', '-123.23876'), prev_location=('',''), restaurants={}):
         self.food_type = food_type
         self.eat_out_type = eat_out_type
         self.user_budget = user_budget
         self.user_time = user_time
+        self.location = location
+        self.prev_location = prev_location
+        self.restaurants =restaurants
+
+    def getLocation(self, view_id):
+        chrome_options = Options()
+        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--profile-directory=Default')
+        chrome_options.add_argument("--use-fake-ui-for-media-stream")
+        timeout = 20
+        driver = webdriver.Chrome(options=chrome_options, executable_path=binary_path)
+        driver.get("https://mycurrentlocation.net/")
+        wait = WebDriverWait(driver, timeout)
+        longitude = driver.find_elements_by_xpath('//*[@id="longitude"]')
+        longitude = [x.text for x in longitude]
+        longitude = str(longitude[0])
+        latitude = driver.find_elements_by_xpath('//*[@id="latitude"]')
+        latitude = [x.text for x in latitude]
+        latitude = str(latitude[0])
+        driver.quit()
+        if longitude and latitude:
+            self.location = (longitude, latitude)
+            print("location fetch successful")
+        else :
+            print("location fetch unsuccessful, using default location")
+        print(self.location)
+        loc_url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={self.location[0]},{self.location[1]}&key={places_key}"
+
+        payload = {}
+
+        headers = {}
+
+        res = requests.get(loc_url, headers=headers, data=payload)
+
+        try:
+            res.raise_for_status()
+        except requests.exceptions as e:
+                # Whoops it wasn't a 200
+            print("Error: " + str(e))
+
+        location = res.json().get('results')[0]['formatted_address']
+        print(location)
+
+        fetched_location_view = fetch_location_view
+        fetched_location_view['blocks'][1]['text']['text'] = "📍 " + location
+
+        print(fetched_location_view)
+
+        updated_view = fetched_location_view
+        client.views_update(view=updated_view, view_id=view_id)
+        time.sleep(1.5)
+        updated_view = get_eat_out_type_view
+        client.views_update(view=updated_view, view_id=view_id)
+
+    
+    def fetchEateries(self):
+
+        distance = int(self.user_time) * 100
+        radius = "&radius=" + str(distance)
+        type = "&type=restaurant"
+        print(self.location)
+        location = "location=" + self.location[0] + ',' + self.location[1]
+        key = "&key=" + places_key
+        url = f"https://maps.googleapis.com/maps/api/place/nearbysearch/json?{location}{radius}{type}&opennow{key}" 
+
+        payload = {}
+
+        headers = {}
+
+        res = requests.get(url, headers=headers, data=payload)
+        
+
+        try:
+            res.raise_for_status()
+
+        except requests.exceptions.HTTPError as e:
+                # Whoops it wasn't a 200
+            print("Error: " + str(e))
+
+        print(res.text)
+
+        restaurants = res.json().get('results')
+        
+        for restaurant in restaurants:
+            location = restaurant.get('geometry').get('location')
+            name = restaurant.get('name')
+            rating = math.ceil(int(restaurant.get('rating'))) * ":star:"
+            address = restaurant.get('vicinity')
+            show_restaurants_view['blocks'].append(
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*{name}*\n{rating}\n{address}"
+                    },
+                    "accessory": {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Show in Maps",
+                        },
+                        "value": f"https://www.google.com/maps?q={location['lat']},{location['lng']}",
+
+                        "action_id": "maps_link"
+                    }
+                    
+                },
+            )
+
+        print(show_restaurants_view)
 
 Configure_Food = configure_class()
+
+
 
 # view definitions
 
@@ -179,14 +304,14 @@ configure_modal_initial_view = {
                                         {
                                             "text": {
                                                 "type": "plain_text",
-                                                "text": "15 mins"
+                                                "text": "15"
                                             },
                                             "value": "15",
                                         },
                                         {
                                             "text": {
                                                 "type": "plain_text",
-                                                "text": "25 mins"
+                                                "text": "25"
                                             },
                                             "value": "25",
                                         },
@@ -197,13 +322,27 @@ configure_modal_initial_view = {
                                             },
                                             "value": "any",
                                         },
+                                                               
                                     ]
                                 }
                             },
-                              
-                            
-
-
+                            {
+                                "type": "divider"
+                            },
+                            {
+                                "type": "actions",
+                                "elements": [
+                                    {
+                                        "type": "button",
+                                        "text": {
+                                            "type": "plain_text",
+                                            "text": "Confirm",
+                                        },
+                                        "value": "confirm",
+                                        "action_id": "confirm_initial"
+                                    }
+                                ]
+                            } 
                         ]
                     }
     
@@ -256,8 +395,43 @@ get_eat_out_type_view = {
     
 show_uber_options_view = {}
 
-show_restaurants_view = {}
-# handles any interactions
+show_restaurants_view = {
+                        "type": "modal",
+                        "callback_id": "restaurant_options_modal",
+                        "title": {
+                            "type": "plain_text",
+                            "text": "Choose a restaurant",
+                        },
+                        "blocks": [
+                            {
+                                "type": "divider",
+                            },
+                            
+                        ]
+                    }
+
+fetch_location_view = {
+                        "type": "modal",
+                        "callback_id": "food_configure_modal",
+                        "title": {
+                            "type": "plain_text",
+                            "text": "Fetching your location",
+                        },
+                        "blocks": [
+                            {
+                                "type": "divider",
+                            },
+                            {
+                                "type": "section",
+                                "block_id": "fetch_location",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": "📍",
+                                },
+                            },
+                        ]
+                    }
+# handles interactions from app 
 
 @app.route('/interaction', methods=['POST'])
 def interaction():
@@ -266,35 +440,24 @@ def interaction():
     action_value = payload.get('actions')[0].get('value')
     action_id = payload.get('actions')[0].get('action_id')
     view_id = payload.get('container').get('view_id')
-    
-    # print(payload.get('actions')[0])
-    # print("action_id " + action_id)
-    # print("value: " + action_value)
-
-    # print("view_id: " + view_id)
-    # print(type(view_id))
-    #print(payload)
-    # print(bool(-1))
-    #print(bool(Configure_Food.food_type))
-    # order_button outside_button
+  
     updated_view = {}
     # if food type, time and budget have been chosen, proceed to next menu
 
-    if action_id == 'order_button':
-        if action_value == 'order':
-            updated_view = show_uber_options_view
-            print("showing uber options")
-        else :
-            updated_view = show_restaurants_view
-            print("showing restaurants view")
-
-
-    elif Configure_Food.food_type and Configure_Food.user_budget and Configure_Food.user_time:
-        if Configure_Food.food_type == 'no_cook':
-            
-            if Configure_Food.eat_out_type == '' :
-                updated_view = get_eat_out_type_view
-                client.views_update(view=updated_view, view_id=view_id)
+    if action_id == 'maps_link' :
+        url = action_value
+        webbrowser.open(url, new=2, autoraise=True)
+    elif action_id == 'order_button':
+    
+        updated_view = show_uber_options_view
+        print("showing uber options")
+    elif action_id == 'outside_button' :
+        print(Configure_Food.location)
+        Configure_Food.fetchEateries()
+        print("fetching restaurants")
+        print("showing restaurants view")
+        updated_view = show_restaurants_view
+        client.views_update(view=updated_view, view_id=view_id)
 
     elif action_id == 'cook_food_button' or action_id == 'order_food_button':
         Configure_Food.food_type = action_value
@@ -309,16 +472,25 @@ def interaction():
         Configure_Food.user_budget = action_value
         print(Configure_Food.user_budget)
 
-    
+
+    elif action_id == "confirm_initial" and Configure_Food.food_type and Configure_Food.user_budget and Configure_Food.user_time:
+        if Configure_Food.food_type == 'no_cook':
+            updated_view = fetch_location_view
+            client.views_update(view=updated_view, view_id=view_id)
+            print('fetching location')
+            Configure_Food.getLocation(view_id)
+
+            
+
+        
                 
 
-
+    
 
     # client.views_update(view=configure_modal_budget, view_id=view_id)
-
-
-    
     return Response(), 200
+
+
 # handle imhungry command
 # entry point for app
 @app.route('/imhungry', methods=['POST', 'GET'])
