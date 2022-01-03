@@ -5,12 +5,7 @@ An app for the Slack workspace that is invoked by a user command. By taking in p
 So far, it allows the user to find nearby restaurant based on their current location : 
 
 
-
-
-
-https://user-images.githubusercontent.com/71570400/131173275-1b635663-92c5-46db-9bfd-484c60bcd030.mov
-
-
+https://user-images.githubusercontent.com/71570400/147901536-64e71efc-6669-47f1-af4a-8d7d6803c30d.mp4
 
 
 
